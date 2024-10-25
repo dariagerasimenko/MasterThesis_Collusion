@@ -1,12 +1,9 @@
-import os
-import numpy as np
-import pandas as pd
+
 import datetime
-import matplotlib.pyplot as plt
 from joblib import dump, load
 from matplotlib.lines import Line2D
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier, AdaBoostClassifier, \
-    GradientBoostingClassifier
+    GradientBoostingClassifier, IsolationForest
 from sklearn.svm import SVC
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import accuracy_score, precision_score, recall_score, balanced_accuracy_score, f1_score, \
@@ -19,11 +16,21 @@ from sklearn.gaussian_process import GaussianProcessClassifier
 from collections import defaultdict
 from scipy import stats
 from itertools import cycle
+from sklearn import mixture
 
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import warnings
+import random
+random.seed(0)
+import numpy as np
+np.random.seed(0)
+import numpy as np
+from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.linear_model import LogisticRegression
+import matplotlib.pyplot as plt
+from sklearn.inspection import permutation_importance
 
 #Font size to plot
 default_font_size = 18
@@ -50,10 +57,12 @@ db_collusion_all = os.path.join(path, 'DB_Collusion_All_processed.csv')
 plot_pdf = True
 
 # User's parameters for the functions
-ml_algorithms = ['GaussianProcessClassifier', 'SGDClassifier', 'ExtraTreesClassifier', 'RandomForestClassifier',
+classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier', 'ExtraTreesClassifier', 'RandomForestClassifier',
                  'AdaBoostClassifier',
                  'GradientBoostingClassifier', 'SVC', 'KNeighborsClassifier', 'MLPClassifier', 'BernoulliNB',
                  'GaussianNB']
+clustering_algs = ['KMeansClustering', 'BGMM', 'AgglomerativeClustering', 'IsolationForest']
+ml_algorithms = clustering_algs
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 train_size = 0.8  # Test and train sizes. The test_size is 1-train_size
@@ -209,7 +218,17 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     y_test = targets.loc[test_index]
 
     # Train the model with the selected algorithm
-    if algorithm == 'ExtraTreesClassifier':
+    if algorithm == 'KMeansClustering':
+        classifier = KMeans(n_clusters=2, init='k-means++', max_iter=300, random_state=42)
+    elif algorithm == 'BGMM':
+        classifier = mixture.BayesianGaussianMixture(n_components=2, weight_concentration_prior=0.1, random_state=42)
+    #elif algorithm == 'DBSCAN':
+        #classifier = DBSCAN(eps=0.2, min_samples=10)
+    elif algorithm == 'AgglomerativeClustering':
+        classifier = AgglomerativeClustering(n_clusters=2, linkage='complete')
+    elif algorithm == 'IsolationForest':
+        classifier = IsolationForest(contamination=0.12, n_estimators=100, random_state=42)
+    elif algorithm == 'ExtraTreesClassifier':
         classifier = ExtraTreesClassifier(n_estimators=n_estimators, criterion='gini', max_depth=None,
                                           min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0,
                                           max_features='sqrt', max_leaf_nodes=None, min_impurity_decrease=0.0,
@@ -380,8 +399,8 @@ def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_siz
 
         # Print curve precision vs recall with iso-F1 lines
         if precision_recall:
-            plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1=0.4, max_f1=0.86, f1_curves=24,
-                                     min_x_y_lim=0.5, max_x_y_lim=1, namefile=namefile)
+            plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1=0.2, max_f1=0.86, f1_curves=24,
+                                     min_x_y_lim=0.15, max_x_y_lim=1, namefile=namefile)
 
 
 def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max_f1, f1_curves, min_x_y_lim,
@@ -633,3 +652,26 @@ def get_dataset(dataset):
     targets = ['Collusive_competitor']
 
     return df_collusion, predictors, targets
+
+def generate_binary_gaussian_cluster(mu_0,mu_1,Sigma_0,Sigma_1,number_of_observations):
+    data=[]
+    for i in range(number_of_observations):
+        if(random.randint(0,1)==0):
+            x = np.random.multivariate_normal(mu_0, Sigma_0, 1)[0]
+            data.append([0,x[0],x[1]])
+        else:
+            x = np.random.multivariate_normal(mu_1, Sigma_1, 1)[0]
+            data.append((1,x[0],x[1]))
+    return data
+
+
+def adjust_cluster_label(data, labels):
+    clusters = [x[0] for x in data]
+    opposing_labels = [1 - x for x in labels]
+    commons = [1 if x == y else 0 for x, y in zip(clusters, labels)]
+    opposing_commons = [1 if x == y else 0 for x, y in zip(clusters, opposing_labels)]
+    if (sum(opposing_commons) > sum(commons)):
+        labels = [1 - x for x in labels]
+
+    return labels
+
