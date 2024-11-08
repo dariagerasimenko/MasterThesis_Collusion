@@ -17,6 +17,8 @@ from collections import defaultdict
 from scipy import stats
 from itertools import cycle
 from sklearn import mixture
+from scipy.stats import mode
+from sklearn.neighbors import NearestCentroid
 
 import os
 import pandas as pd
@@ -61,8 +63,8 @@ classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier',
                  'AdaBoostClassifier',
                  'GradientBoostingClassifier', 'SVC', 'KNeighborsClassifier', 'MLPClassifier', 'BernoulliNB',
                  'GaussianNB']
-clustering_algs = ['KMeansClustering', 'BGMM', 'AgglomerativeClustering', 'IsolationForest']
-ml_algorithms = clustering_algs
+clustering_algs = ['KMeansClustering', 'BGMM', 'IsolationForest']
+ml_algorithms = ['KMeansClustering','RandomForestClassifier']#clustering_algs
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 train_size = 0.8  # Test and train sizes. The test_size is 1-train_size
@@ -71,7 +73,6 @@ n_estimators = 300  # Number of estimators for ML algorithms
 precision_recall = True  # To plot precision-recall curves
 load_data = False  # To load the error metrics (to load previous data experimentation)
 save_data = True  # To save the error metrics (to persist the data experimentation)
-
 
 
 def shuffle_tenders(df1):
@@ -300,20 +301,33 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
                                                multi_class='one_vs_rest', n_jobs=-1)
 
     # We build the model for the train group
-    classifier = classifier.fit(x_train, y_train.values.ravel())
+    if algorithm in clustering_algs:
+        classifier = classifier.fit(x_train)
+        cluster_labels = classifier.predict(x_test)
+        cluster_labels = np.where(cluster_labels == -1, 0, cluster_labels)
+        labels_map = np.zeros(2)
+        for cluster in range(2):
+            true_label = mode(y_test[cluster_labels == cluster])[0][0]
+            labels_map[cluster] = true_label
 
-    # We predict for the values of the test group
-    predictions = classifier.predict(x_test)
+        # Map cluster labels to true labels
+        predictions = np.array([labels_map[label] for label in cluster_labels])
+    else:
+        classifier = classifier.fit(x_train, y_train.values.ravel())
+        predictions = classifier.predict(x_test)
+
     df_predictions = pd.DataFrame(data=predictions, index=y_test.index, columns=['Forecast_collusive_competitor'])
+    # here we adjust the labels predicted by the clustering algs.
+
 
     # To calculate the error metrics for the classification binary model
     accuracy = accuracy_score(y_test, predictions) * 100
     balanced_accuracy = balanced_accuracy_score(y_test, predictions) * 100
-    precision = precision_score(y_test, predictions, pos_label=1, average='binary',
+    precision = precision_score(y_test, predictions, pos_label=1, average=None, #average='binary'
                                 zero_division=1) * 100  # Ratio of true positives: tp / (tp + fp)
-    recall = recall_score(y_test, predictions, pos_label=1, average='binary',
+    recall = recall_score(y_test, predictions, pos_label=1, average=None, #average='binary'
                           zero_division=1) * 100  # Ratio of true positives: tp / (tp + fn)
-    f1 = f1_score(y_test, predictions, pos_label=1, average='binary',
+    f1 = f1_score(y_test, predictions, pos_label=1, average=None, #average='binary'
                   zero_division=1) * 100  # F1 = 2 * (precision * recall) / (precision + recall)
     confusion = confusion_matrix(y_test, predictions, normalize='all') * 100
 
@@ -399,8 +413,8 @@ def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_siz
 
         # Print curve precision vs recall with iso-F1 lines
         if precision_recall:
-            plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1=0.2, max_f1=0.86, f1_curves=24,
-                                     min_x_y_lim=0.15, max_x_y_lim=1, namefile=namefile)
+            plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1=0.40, max_f1=0.86, f1_curves=24,
+                                     min_x_y_lim=0.4, max_x_y_lim=1, namefile=namefile)
 
 
 def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max_f1, f1_curves, min_x_y_lim,
@@ -604,8 +618,8 @@ def get_dataset(dataset):
 
     if dataset == 'brazilian':
         df_collusion = pd.read_csv(db_collusion_brazilian, header=0)
-        predictors['all_setting'] = ['Tender', 'Bid_value', 'Pre-Tender Estimate (PTE)', 'Difference Bid/PTE', 'Site',
-                                     'Date', 'Brazilian State', 'Winner', 'Number_bids']
+        predictors['all_setting'] = ['Tender', 'Bid_value', 'Pre-Tender Estimate (PTE)', 'Difference Bid/PTE', 'Site', ## remove tender and site
+                                     'Date', 'Brazilian State', 'Winner', 'Number_bids'] ##remove Difference.. exclude the ord. variables.
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
         predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Date', 'Number_bids']
 
