@@ -59,12 +59,13 @@ db_collusion_all = os.path.join(path, 'DB_Collusion_All_processed.csv')
 plot_pdf = True
 
 # User's parameters for the functions
+n_clusters = 2
 classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier', 'ExtraTreesClassifier', 'RandomForestClassifier',
                  'AdaBoostClassifier',
                  'GradientBoostingClassifier', 'SVC', 'KNeighborsClassifier', 'MLPClassifier', 'BernoulliNB',
                  'GaussianNB']
-clustering_algs = ['KMeansClustering', 'BGMM', 'IsolationForest']
-ml_algorithms = ['KMeansClustering','RandomForestClassifier']#clustering_algs
+clustering_algs = ['BGMM', 'IsolationForest', 'KMeansClustering']
+ml_algorithms = ['KMeansClustering','BGMM', 'IsolationForest','RandomForestClassifier']#clustering_algs
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 train_size = 0.8  # Test and train sizes. The test_size is 1-train_size
@@ -220,13 +221,13 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
 
     # Train the model with the selected algorithm
     if algorithm == 'KMeansClustering':
-        classifier = KMeans(n_clusters=2, init='k-means++', max_iter=300, random_state=42)
+        classifier = KMeans(n_clusters=n_clusters, init='k-means++', max_iter=300, random_state=42)
     elif algorithm == 'BGMM':
-        classifier = mixture.BayesianGaussianMixture(n_components=2, weight_concentration_prior=0.1, random_state=42)
+        classifier = mixture.BayesianGaussianMixture(n_components=n_clusters, weight_concentration_prior=0.1, random_state=42)
     #elif algorithm == 'DBSCAN':
         #classifier = DBSCAN(eps=0.2, min_samples=10)
     elif algorithm == 'AgglomerativeClustering':
-        classifier = AgglomerativeClustering(n_clusters=2, linkage='complete')
+        classifier = AgglomerativeClustering(n_clusters=n_clusters, linkage='complete')
     elif algorithm == 'IsolationForest':
         classifier = IsolationForest(contamination=0.12, n_estimators=100, random_state=42)
     elif algorithm == 'ExtraTreesClassifier':
@@ -305,8 +306,8 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
         classifier = classifier.fit(x_train)
         cluster_labels = classifier.predict(x_test)
         cluster_labels = np.where(cluster_labels == -1, 0, cluster_labels)
-        labels_map = np.zeros(2)
-        for cluster in range(2):
+        labels_map = np.zeros(n_clusters)
+        for cluster in range(n_clusters):
             true_label = mode(y_test[cluster_labels == cluster])[0][0]
             labels_map[cluster] = true_label
 
@@ -618,8 +619,10 @@ def get_dataset(dataset):
 
     if dataset == 'brazilian':
         df_collusion = pd.read_csv(db_collusion_brazilian, header=0)
-        predictors['all_setting'] = ['Tender', 'Bid_value', 'Pre-Tender Estimate (PTE)', 'Difference Bid/PTE', 'Site', ## remove tender and site
-                                     'Date', 'Brazilian State', 'Winner', 'Number_bids'] ##remove Difference.. exclude the ord. variables.
+        #predictors['all_setting'] = ['Tender', 'Bid_value', 'Pre-Tender Estimate (PTE)', 'Difference Bid/PTE', 'Site', ## remove tender and site
+                                     #'Date', 'Brazilian State', 'Winner', 'Number_bids'] ##remove Difference.. exclude the ord. variables.
+        predictors['all_setting'] = [ 'Bid_value', 'Pre-Tender Estimate (PTE)',
+                                     'Date', 'Winner', 'Number_bids']
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
         predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Date', 'Number_bids']
 
