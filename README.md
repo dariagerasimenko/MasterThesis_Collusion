@@ -11,7 +11,7 @@ This project contains the following files:
    - It includes both **classification** and **clustering models** for detecting patterns of collusion.
 
 ### 2. `utils.py`
-   - This file contains all the helper functions used in the main code (`Collusion_Detection.py`), organized for modularity and ease of access.
+   - This file contains all the helper functions used in the main code (`Collusion_Detection.py`)
 
 ### 3. `requirements.txt`
    - This file lists all the necessary Python packages required to run the scripts. Install the dependencies with:
@@ -21,5 +21,3 @@ This project contains the following files:
      ```
 
 ---
-
-Feel free to explore the code and adapt it for similar datasets or applications!
