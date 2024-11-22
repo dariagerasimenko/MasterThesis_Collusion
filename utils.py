@@ -19,6 +19,7 @@ from itertools import cycle
 from sklearn import mixture
 from scipy.stats import mode
 from sklearn.neighbors import NearestCentroid
+from scipy.stats import iqr
 
 import os
 import pandas as pd
@@ -74,7 +75,7 @@ n_estimators = 300  # Number of estimators for ML algorithms
 precision_recall = True  # To plot precision-recall curves
 load_data = False  # To load the error metrics (to load previous data experimentation)
 save_data = True  # To save the error metrics (to persist the data experimentation)
-
+quality_table = True
 
 def shuffle_tenders(df1):
     ''' Shuffle tenders. The reason is that maybe the colluded tenders are concentrated in some parts of the excel (dataframe)'''
@@ -197,6 +198,50 @@ def print_boxplot(df, dataset, column_names, groupby, min_ylim, max_ylim, step_y
         fig.savefig(name_file, format='pdf', dpi=1200, bbox_inches='tight')
         print('Generated and saved file called ' + name_file)
     plt.rcParams.update({'font.size': default_font_size})
+def stratified_group_split(predictors, targets, groups, train_size=0.8, random_state=42):
+    """
+    Perform a stratified group split to ensure the train/test split is stratified based on targets
+    and maintains the group constraint.
+
+    Parameters:
+    - predictors: Feature dataframe.
+    - targets: Target series to stratify on.
+    - groups: Grouping column (e.g., 'Tender') to ensure grouped data stays in the same split.
+    - train_size: Proportion of data to include in the train set.
+    - random_state: Seed for reproducibility.
+
+    Returns:
+    - x_train, x_test, y_train, y_test: Train/test splits of predictors and targets.
+    """
+    # Create a DataFrame to group data by 'Tender'
+    data = predictors.copy()
+    data['targets'] = targets
+    data['groups'] = groups
+
+    # Group by 'Tender' and calculate the proportion of each class in the group
+    group_stats = data.groupby('groups')['targets'].value_counts(normalize=True).unstack(fill_value=0)
+    group_stats['max_class'] = group_stats.idxmax(axis=1)  # Assign the most common target to the group
+
+    # Ensure stratification by dividing groups based on their majority class
+    majority_classes = group_stats['max_class']
+    gss = GroupShuffleSplit(n_splits=1, train_size=train_size, random_state=random_state)
+    train_groups, test_groups = next(gss.split(group_stats, majority_classes, groups=group_stats.index))
+
+    # Get the train/test groups
+    train_groups = group_stats.index[train_groups]
+    test_groups = group_stats.index[test_groups]
+
+    # Split the original data based on groups
+    train_data = data[data['groups'].isin(train_groups)]
+    test_data = data[data['groups'].isin(test_groups)]
+
+    # Extract predictors and targets
+    x_train = train_data.drop(columns=['targets', 'groups'])
+    y_train = train_data['targets']
+    x_test = test_data.drop(columns=['targets', 'groups'])
+    y_test = test_data['targets']
+
+    return x_train, x_test, y_train, y_test
 
 
 def predict_collusion_company(df, dataset, predictors_column_name, targets_column_name, algorithm, train_size,
@@ -212,12 +257,21 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
 
     # We create the training and test sample, both for predictors and for the objective variable, based on the tender group.
     # That is, the bids of a tender either all own to the train group or the test group. They cannot be divided between both groups.
-    gss = GroupShuffleSplit(n_splits=5, train_size=train_size)
-    train_index, test_index = next(gss.split(predictors, targets, groups=df['Tender']))
-    x_train = predictors.loc[train_index]
-    y_train = targets.loc[train_index]
-    x_test = predictors.loc[test_index]
-    y_test = targets.loc[test_index]
+
+    # gss = GroupShuffleSplit(n_splits=5, train_size=train_size)
+    # train_index, test_index = next(gss.split(predictors, targets, groups=df['Tender']))
+    # x_train = predictors.loc[train_index]
+    # y_train = targets.loc[train_index]
+    # x_test = predictors.loc[test_index]
+    # y_test = targets.loc[test_index]
+
+    x_train, x_test, y_train, y_test = stratified_group_split(
+        predictors=predictors,
+        targets=targets,
+        groups=df['Tender'],
+        train_size=0.8,
+        random_state=42
+    )
 
     # Train the model with the selected algorithm
     if algorithm == 'KMeansClustering':
@@ -306,13 +360,8 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
         classifier = classifier.fit(x_train)
         cluster_labels = classifier.predict(x_test)
         cluster_labels = np.where(cluster_labels == -1, 0, cluster_labels)
-        labels_map = np.zeros(n_clusters)
-        for cluster in range(n_clusters):
-            true_label = mode(y_test[cluster_labels == cluster])[0][0]
-            labels_map[cluster] = true_label
-
-        # Map cluster labels to true labels
-        predictions = np.array([labels_map[label] for label in cluster_labels])
+        adjusted_labels = adjust_cluster_label(cluster_labels)
+        predictions = adjusted_labels
     else:
         classifier = classifier.fit(x_train, y_train.values.ravel())
         predictions = classifier.predict(x_test)
@@ -336,7 +385,7 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
 
 
 def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_size, repetitions, n_estimators,
-                         precision_recall=False, load_data=False, save_data=False):
+                         precision_recall=False, load_data=False, save_data=False, quality_table=False):
     ''' Print table to compare Machine Learning algorithms '''
 
     df = shuffle_tenders(df)
@@ -416,6 +465,68 @@ def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_siz
         if precision_recall:
             plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1=0.40, max_f1=0.86, f1_curves=24,
                                      min_x_y_lim=0.4, max_x_y_lim=1, namefile=namefile)
+        if quality_table:
+            save_metrics_table(algorithms, train_size, test_size, repetitions, setting,
+                                   accuracy, false_positive, false_negative,
+                                   balanced_accuracy, f1, precision, recall,
+                                   dataset="my_dataset", namefile=namefile)
+
+def save_metrics_table(algorithms, train_size, test_size, repetitions, setting,
+                                accuracy, false_positive, false_negative,
+                                balanced_accuracy, f1, precision, recall,
+                                dataset="my_dataset", namefile=None):
+    """
+    Save a detailed metrics table including confidence intervals.
+
+    Parameters:
+    - algorithms: List of algorithms being evaluated.
+    - train_size: Size of the training dataset.
+    - test_size: Size of the test dataset.
+    - repetitions: Number of repetitions for the evaluation.
+    - setting: all_setting, common, screens or combined.
+    - accuracy, false_positive, false_negative, balanced_accuracy, f1, precision, recall:
+      Dictionaries containing lists of metric values for each algorithm (in %).
+    - dataset: The name of the dataset (used in the filename).
+    - namefile: The name of the CSV file to save the table.
+
+    Returns:
+    - A CSV file containing the table with calculated metrics and confidence intervals.
+    """
+    metrics_data = []
+
+    for algorithm in algorithms:
+        metrics_data.append({
+            "Algorithm": algorithm,
+            "Train Size": train_size,
+            "Test Size": test_size,
+            "Repetitions": repetitions,
+            "Setting": setting,
+            "Mean Accuracy": np.mean(accuracy[algorithm]),
+            "Accuracy CI (IQR)": iqr(accuracy[algorithm]),
+            "Mean False Positive": np.mean(false_positive[algorithm]),
+            "False Positive CI (IQR)": iqr(false_positive[algorithm]),
+            "Mean False Negative": np.mean(false_negative[algorithm]),
+            "False Negative CI (IQR)": iqr(false_negative[algorithm]),
+            "Mean Balanced Accuracy": np.mean(balanced_accuracy[algorithm]),
+            "Balanced Accuracy CI (IQR)": iqr(balanced_accuracy[algorithm]),
+            "Mean F1-Score": np.mean(f1[algorithm]),
+            "Median F1-Score": np.median(f1[algorithm]),
+            "F1 CI (IQR)": iqr(f1[algorithm]),
+            "Mean Precision": np.mean(precision[algorithm]),
+            "Median Precision": np.median(precision[algorithm]),
+            "Precision CI (IQR)": iqr(precision[algorithm]),
+            "Mean Recall": np.mean(recall[algorithm]),
+            "Median Recall": np.median(recall[algorithm]),
+            "Recall CI (IQR)": iqr(recall[algorithm])
+        })
+
+    # Create a DataFrame
+    metrics_df = pd.DataFrame(metrics_data)
+
+    # Save to CSV
+    filename = dataset + '_Precision_Recall_' + namefile + '.csv'
+    metrics_df.to_csv(filename, index=False)
+    print(f"Metrics table saved to {filename}")
 
 
 def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max_f1, f1_curves, min_x_y_lim,
@@ -435,6 +546,8 @@ def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max
     f1_scores = np.linspace(min_f1, max_f1, num=f1_curves)
     lines = []
     labels = []
+    recall1 = recall.copy()
+    precision1 = precision.copy()
 
     # Create iso-F1 curves
     for f1_scores in f1_scores:
@@ -447,8 +560,8 @@ def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max
 
     # Convert to [0, 1]
     for item in algorithms:
-        recall[item] = [x / 100 for x in recall[item]]
-        precision[item] = [x / 100 for x in precision[item]]
+        recall1[item] = [x / 100 for x in recall1[item]]
+        precision1[item] = [x / 100 for x in precision1[item]]
 
     # Calculate the points to plot the two lines
     line_precision_x = defaultdict(list)
@@ -456,10 +569,10 @@ def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max
     line_recall_x = defaultdict(list)
     line_recall_y = defaultdict(list)
     for item in algorithms:
-        line_recall_x[item] = [np.percentile(recall[item], 25), np.percentile(recall[item], 75)]
-        line_recall_y[item] = [np.median(precision[item]), np.median(precision[item])]
-        line_precision_x[item] = [np.median(recall[item]), np.median(recall[item])]
-        line_precision_y[item] = [np.percentile(precision[item], 25), np.percentile(precision[item], 75)]
+        line_recall_x[item] = [np.percentile(recall1[item], 25), np.percentile(recall1[item], 75)]
+        line_recall_y[item] = [np.median(precision1[item]), np.median(precision1[item])]
+        line_precision_x[item] = [np.median(recall1[item]), np.median(recall1[item])]
+        line_precision_y[item] = [np.percentile(precision1[item], 25), np.percentile(precision1[item], 75)]
 
     # Plot the two lines and the point to cut both lines
     for item, color in zip(algorithms, colors):  # It can possible to use markers list
@@ -467,7 +580,7 @@ def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max
                       markeredgewidth=4)
         l, = plt.plot(line_recall_x[item], line_recall_y[item], color=color, lw=4, marker='|', markersize=14,
                       markeredgewidth=4)
-        l, = plt.plot(np.median(recall[item]), np.median(precision[item]), color=color, markersize=8, marker='o')
+        l, = plt.plot(np.median(recall1[item]), np.median(precision1[item]), color=color, markersize=8, marker='o')
         lines.append(l)
         labels.append('{}'.format(item))
 
@@ -666,7 +779,7 @@ def get_dataset(dataset):
     predictors['common+screens'] = predictors['common'] + screens
 
     # Output fields of the datasets to the ML algorithms.
-    targets = ['Collusive_competitor']
+    targets = ['Collusive_competitor_original']
 
     return df_collusion, predictors, targets
 
@@ -682,13 +795,22 @@ def generate_binary_gaussian_cluster(mu_0,mu_1,Sigma_0,Sigma_1,number_of_observa
     return data
 
 
-def adjust_cluster_label(data, labels):
-    clusters = [x[0] for x in data]
-    opposing_labels = [1 - x for x in labels]
-    commons = [1 if x == y else 0 for x, y in zip(clusters, labels)]
-    opposing_commons = [1 if x == y else 0 for x, y in zip(clusters, opposing_labels)]
-    if (sum(opposing_commons) > sum(commons)):
-        labels = [1 - x for x in labels]
+def adjust_cluster_label(labels):
+    """
+    Adjusts the cluster labels by assigning 1 to the least occurring label and 0 otherwise.
 
-    return labels
+    Parameters:
+    - data: List of cluster assignments from the clustering algorithm.
+    - labels: List of predicted labels to adjust.
+
+    Returns:
+    - Updated labels with 1 assigned to the least occurring label and 0 to the other.
+    """
+    unique_labels, counts = np.unique(labels, return_counts=True)
+    least_occuring_label = unique_labels[np.argmin(counts)]
+
+    # Map the least occurring label to 1 and others to 0
+    adjusted_labels = [1 if label == least_occuring_label else 0 for label in labels]
+
+    return adjusted_labels
 

@@ -40,7 +40,7 @@ if __name__ == '__main__':
     # 4. Print Scatter Matrix
     df_scatter_matrix = shuffle_tenders(df_collusion)
     # Columns to plot
-    columns_to_plot = ['Bid_value'] + screens + ['Collusive_competitor'] # Collusive_competitor is deleted at the end
+    columns_to_plot = ['Bid_value'] + screens + ['Collusive_competitor_original'] # Collusive_competitor is deleted at the end
     df_scatter_matrix = df_scatter_matrix[columns_to_plot]
     # Replace labels for colors to print the scatter matrix
     if 'Collusive_competitor_original' in df_scatter_matrix:
@@ -59,10 +59,10 @@ if __name__ == '__main__':
     min_ylim_screens = [0, 0, 0, -12, -4, -4, 0]
     step_y_screens = [0.4/10, 1.8/10, 0.3/10, 24/10, 8/10, 8/10, 1/10]
     df_collusion_copy = df_collusion.copy()
-    df_collusion_copy['Collusive_competitor'].replace(0, 'Comp.', inplace=True)
-    df_collusion_copy['Collusive_competitor'].replace(1, 'Coll.', inplace=True)
+    df_collusion_copy['Collusive_competitor_original'].replace(0, 'Comp.', inplace=True)
+    df_collusion_copy['Collusive_competitor_original'].replace(1, 'Coll.', inplace=True)
     for index, screen_variable in enumerate(screens):
-        print_boxplot(df_collusion_copy, dataset, column_names=screen_variable, groupby='Collusive_competitor', min_ylim=min_ylim_screens[index], 
+        print_boxplot(df_collusion_copy, dataset, column_names=screen_variable, groupby='Collusive_competitor_original', min_ylim=min_ylim_screens[index],
                       max_ylim=max_ylim_screens[index], step_y=step_y_screens[index], xlabel='Bids', percentage=True)
 
     # 6. Histogram or density plot of Number of Bids by Tender. Each plot for collusive tenders and honest tenders.
@@ -75,5 +75,5 @@ if __name__ == '__main__':
     plotTwoHistograms(dataset, competitive_bids, collusive_bids, label_1='competitive bids', label_2='collusive bids', max_range=125, bins=25, max_xlim=125, density=True)
 
     # 7. Execute algorithm comparison and print table comparison  
-    algorithm_comparison(df_collusion, dataset, predictors, targets, ml_algorithms, train_size, repetitions, n_estimators, precision_recall, load_data, save_data)
+    algorithm_comparison(df_collusion, dataset, predictors, targets, ml_algorithms, train_size, repetitions, n_estimators, precision_recall, load_data, save_data, quality_table)
    
