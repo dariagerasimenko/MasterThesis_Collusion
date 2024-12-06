@@ -17,9 +17,13 @@ from collections import defaultdict
 from scipy import stats
 from itertools import cycle
 from sklearn import mixture
+from sklearn.model_selection import GroupShuffleSplit
 from scipy.stats import mode
 from sklearn.neighbors import NearestCentroid
 from scipy.stats import iqr
+import tensorflow as tf
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense
 
 import os
 import pandas as pd
@@ -66,7 +70,7 @@ classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier',
                  'GradientBoostingClassifier', 'SVC', 'KNeighborsClassifier', 'MLPClassifier', 'BernoulliNB',
                  'GaussianNB']
 clustering_algs = ['BGMM', 'IsolationForest', 'KMeansClustering']
-ml_algorithms = ['KMeansClustering','BGMM', 'IsolationForest','RandomForestClassifier']#clustering_algs
+ml_algorithms = ['KMeansClustering','RandomForestClassifier']#clustering_algs
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 train_size = 0.8  # Test and train sizes. The test_size is 1-train_size
@@ -198,10 +202,11 @@ def print_boxplot(df, dataset, column_names, groupby, min_ylim, max_ylim, step_y
         fig.savefig(name_file, format='pdf', dpi=1200, bbox_inches='tight')
         print('Generated and saved file called ' + name_file)
     plt.rcParams.update({'font.size': default_font_size})
+
 def stratified_group_split(predictors, targets, groups, train_size=0.8, random_state=42):
     """
     Perform a stratified group split to ensure the train/test split is stratified based on targets
-    and maintains the group constraint.
+    and maintains the group constraint, with a report on class distribution.
 
     Parameters:
     - predictors: Feature dataframe.
@@ -252,7 +257,20 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     simplify_process = ['japan', 'italian', 'switzerland_gr_sg', 'american', 'all']
 
     # To assing the dataframes
-    predictors = df[predictors_column_name]
+    # predictors = df[predictors_column_name]
+    # targets = df[targets_column_name]
+    input_dim = len(predictors_column_name)  # Number of input features
+    encoding_dim = 12    # int(input_dim * 0.5)
+    encoded_features = preprocess_with_autoencoder(
+        df,
+        features=predictors_column_name,
+        encoding_dim=encoding_dim,  # Adjust encoding dimension as needed
+        epochs=50,
+        batch_size=32
+    )
+
+    # Replace predictors with encoded features
+    predictors = encoded_features
     targets = df[targets_column_name]
 
     # We create the training and test sample, both for predictors and for the objective variable, based on the tender group.
@@ -273,13 +291,16 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
         random_state=42
     )
 
+    train_target_percentages = (y_train.sum() / len(y_train)) * 100
+    test_target_percentages = (y_test.sum() / len(y_test)) * 100
+
     # Train the model with the selected algorithm
     if algorithm == 'KMeansClustering':
         classifier = KMeans(n_clusters=n_clusters, init='k-means++', max_iter=300, random_state=42)
     elif algorithm == 'BGMM':
         classifier = mixture.BayesianGaussianMixture(n_components=n_clusters, weight_concentration_prior=0.1, random_state=42)
-    #elif algorithm == 'DBSCAN':
-        #classifier = DBSCAN(eps=0.2, min_samples=10)
+    elif algorithm == 'DBSCAN':
+        classifier = DBSCAN(eps=0.2, min_samples=10)
     elif algorithm == 'AgglomerativeClustering':
         classifier = AgglomerativeClustering(n_clusters=n_clusters, linkage='complete')
     elif algorithm == 'IsolationForest':
@@ -381,18 +402,18 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
                   zero_division=1) * 100  # F1 = 2 * (precision * recall) / (precision + recall)
     confusion = confusion_matrix(y_test, predictions, normalize='all') * 100
 
-    return accuracy, balanced_accuracy, precision, recall, f1, confusion, y_test, df_predictions
+
+    return accuracy, balanced_accuracy, precision, recall, f1, confusion, y_test, df_predictions, train_target_percentages, test_target_percentages
 
 
 def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_size, repetitions, n_estimators,
-                         precision_recall=False, load_data=False, save_data=False, quality_table=False):
+                         precision_recall=False, load_data=False, save_data=False, quality_table=False,
+                         target_share_train=False, target_share_test=False):
     ''' Print table to compare Machine Learning algorithms '''
 
     df = shuffle_tenders(df)
 
     for setting in predictors:
-        print('')
-        print('Generating models for ' + setting)
         accuracy = defaultdict(list)
         balanced_accuracy = defaultdict(list)
         false_positive = defaultdict(list)
@@ -402,23 +423,25 @@ def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_siz
         f1 = defaultdict(list)
         tenders_test = defaultdict(list)
         tenders_predictions = defaultdict(list)
+        target_share_train = defaultdict(list)
+        target_share_test = defaultdict(list)
 
         # Create namefile
         namefile = dataset + '_ML_algorithms_experimentation_' + setting + '_' + str(repetitions) + 'repetitions'
 
         if load_data == False:
             for algorithm in algorithms:
-                print('Training algorithm ' + algorithm)
+                print(f'Training algorithm {algorithm}')
                 df_copy = df.copy()
                 if algorithm in ['GaussianProcessClassifier', 'GradientBoostingClassifier', 'SVC']:
                     loop = int(round(repetitions / 40))
                     if dataset == 'all' and algorithm == 'GaussianProcessClassifier':
-                        # Exception: reduce the datataset to be able to compute this dataset and algorithm
+                        # Exception: reduce the dataset to be able to compute this dataset and algorithm
                         df_copy = df_copy.sample(frac=0.5).reset_index(drop=True)
                 else:
                     loop = repetitions
                 for i in range(loop):
-                    item_accuracy, item_balanced_accuracy, item_precision, item_recall, item_f1, confusion_matrix, item_tenders_test, item_tenders_predictions = \
+                    item_accuracy, item_balanced_accuracy, item_precision, item_recall, item_f1, confusion_matrix, item_tenders_test, item_tenders_predictions, train_target_percentages, test_target_percentages = \
                         predict_collusion_company(df_copy, dataset, predictors[setting], targets, algorithm, train_size,
                                                   n_estimators)
                     accuracy[algorithm].append(item_accuracy)
@@ -434,12 +457,15 @@ def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_siz
                     f1[algorithm].append(item_f1)
                     tenders_test[algorithm].append(item_tenders_test)
                     tenders_predictions[algorithm].append(item_tenders_predictions)
+                    target_share_train[algorithm].append(train_target_percentages)
+                    target_share_test[algorithm].append(test_target_percentages)
+
 
             # Save dictionaries to persist the data experimentation
             if save_data:
                 path_namefile = os.path.join(path, namefile + '.pkl')
                 file = [accuracy, balanced_accuracy, false_positive, false_negative, precision, recall, f1, df,
-                        tenders_test, tenders_predictions]
+                        tenders_test, tenders_predictions, target_share_train, target_share_test]
                 dump(file, path_namefile, compress=6)
 
         else:
@@ -452,31 +478,37 @@ def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_siz
             # Print error metrics
             test_size = 1 - train_size
             print(
-                'Algorithm {} with train:test {:,.2f}:{:,.2f}, {} repetitions and {}: mean_accuracy={:,.1f}, mean_FP={:,.1f}, '
-                'mean_FN={:,.1f}, mean_balanced_accuracy={:,.1f}, mean_f1={:,.1f}, median_f1={:,.1f}, mean_precision={:,.1f}, '
-                'median_precision={:,.1f}, mean_recall={:,.1f} and median_recall={:,.1f}'.format(
-                    algorithm, train_size, test_size, repetitions, setting, np.mean(accuracy[algorithm]),
-                    np.mean(false_positive[algorithm]), np.mean(false_negative[algorithm]),
-                    np.mean(balanced_accuracy[algorithm]), np.mean(f1[algorithm]), np.median(f1[algorithm]),
-                    np.mean(precision[algorithm]),
-                    np.median(precision[algorithm]), np.mean(recall[algorithm]), np.median(recall[algorithm])))
+                f'Algorithm {algorithm} with train:test {train_size:.2f}:{test_size:.2f}, {repetitions} repetitions '
+                f'and {setting}: mean_accuracy={np.mean(accuracy[algorithm]):.1f}, mean_FP={np.mean(false_positive[algorithm]):.1f}, '
+                f'mean_FN={np.mean(false_negative[algorithm]):.1f}, mean_balanced_accuracy={np.mean(balanced_accuracy[algorithm]):.1f}, '
+                f'mean_f1={np.mean(f1[algorithm]):.1f}, median_f1={np.median(f1[algorithm]):.1f}, mean_precision={np.mean(precision[algorithm]):.1f}, '
+                f'median_precision={np.median(precision[algorithm]):.1f}, mean_recall={np.mean(recall[algorithm]):.1f}, '
+                f'median_recall={np.median(recall[algorithm]):.1f}')
+            print(
+                f'Train Target % (Class 1): {train_target_percentages:.2f}%, '
+                f'Test Target % (Class 1): {test_target_percentages:.2f}%')
 
         # Print curve precision vs recall with iso-F1 lines
         if precision_recall:
             plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1=0.40, max_f1=0.86, f1_curves=24,
                                      min_x_y_lim=0.4, max_x_y_lim=1, namefile=namefile)
         if quality_table:
-            save_metrics_table(algorithms, train_size, test_size, repetitions, setting,
-                                   accuracy, false_positive, false_negative,
-                                   balanced_accuracy, f1, precision, recall,
-                                   dataset="my_dataset", namefile=namefile)
+            save_metrics_table(
+                algorithms, train_size, test_size, repetitions, setting,
+                accuracy, false_positive, false_negative,
+                balanced_accuracy, f1, precision, recall,train_target_percentages,test_target_percentages,
+                dataset=dataset, namefile=namefile
+            )
 
-def save_metrics_table(algorithms, train_size, test_size, repetitions, setting,
-                                accuracy, false_positive, false_negative,
-                                balanced_accuracy, f1, precision, recall,
-                                dataset="my_dataset", namefile=None):
+
+def save_metrics_table(
+        algorithms, train_size, test_size, repetitions, setting,
+        accuracy, false_positive, false_negative,
+        balanced_accuracy, f1, precision, recall,
+        train_target_percentage, test_target_percentage,
+        dataset="my_dataset", namefile=None):
     """
-    Save a detailed metrics table including confidence intervals.
+    Save a detailed metrics table including confidence intervals and target distribution.
 
     Parameters:
     - algorithms: List of algorithms being evaluated.
@@ -486,6 +518,8 @@ def save_metrics_table(algorithms, train_size, test_size, repetitions, setting,
     - setting: all_setting, common, screens or combined.
     - accuracy, false_positive, false_negative, balanced_accuracy, f1, precision, recall:
       Dictionaries containing lists of metric values for each algorithm (in %).
+    - train_target_percentage, test_target_percentage: Percentage of target class (e.g., class 1)
+      in train and test datasets.
     - dataset: The name of the dataset (used in the filename).
     - namefile: The name of the CSV file to save the table.
 
@@ -497,37 +531,35 @@ def save_metrics_table(algorithms, train_size, test_size, repetitions, setting,
     for algorithm in algorithms:
         metrics_data.append({
             "Algorithm": algorithm,
-            "Train Size": train_size,
-            "Test Size": test_size,
-            "Repetitions": repetitions,
             "Setting": setting,
+            "Train Target %": train_target_percentage,
+            "Test Target %": test_target_percentage,
             "Mean Accuracy": np.mean(accuracy[algorithm]),
-            "Accuracy CI (IQR)": iqr(accuracy[algorithm]),
+            "Accuracy SD": np.std(accuracy[algorithm]),
             "Mean False Positive": np.mean(false_positive[algorithm]),
-            "False Positive CI (IQR)": iqr(false_positive[algorithm]),
+            "False Positive SD": np.std(false_positive[algorithm]),
             "Mean False Negative": np.mean(false_negative[algorithm]),
-            "False Negative CI (IQR)": iqr(false_negative[algorithm]),
+            "False Negative SD": np.std(false_negative[algorithm]),
             "Mean Balanced Accuracy": np.mean(balanced_accuracy[algorithm]),
-            "Balanced Accuracy CI (IQR)": iqr(balanced_accuracy[algorithm]),
+            "Balanced Accuracy SD": np.std(balanced_accuracy[algorithm]),
             "Mean F1-Score": np.mean(f1[algorithm]),
             "Median F1-Score": np.median(f1[algorithm]),
-            "F1 CI (IQR)": iqr(f1[algorithm]),
+            "F1 SD": np.std(f1[algorithm]),
             "Mean Precision": np.mean(precision[algorithm]),
             "Median Precision": np.median(precision[algorithm]),
-            "Precision CI (IQR)": iqr(precision[algorithm]),
+            "Precision SD": np.std(precision[algorithm]),
             "Mean Recall": np.mean(recall[algorithm]),
             "Median Recall": np.median(recall[algorithm]),
-            "Recall CI (IQR)": iqr(recall[algorithm])
+            "Recall SD": np.std(recall[algorithm])
         })
 
     # Create a DataFrame
     metrics_df = pd.DataFrame(metrics_data)
 
     # Save to CSV
-    filename = dataset + '_Precision_Recall_' + namefile + '.csv'
+    filename = f"{dataset}_Metrics_{namefile}.csv"
     metrics_df.to_csv(filename, index=False)
     print(f"Metrics table saved to {filename}")
-
 
 def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max_f1, f1_curves, min_x_y_lim,
                              max_x_y_lim, namefile=None):
@@ -813,4 +845,48 @@ def adjust_cluster_label(labels):
     adjusted_labels = [1 if label == least_occuring_label else 0 for label in labels]
 
     return adjusted_labels
+
+def build_autoencoder(input_dim, encoding_dim):
+    # Define the input layer
+    input_layer = Input(shape=(input_dim,))
+
+    # Encoder: reduce dimensionality
+    encoded = Dense(encoding_dim, activation='relu')(input_layer)
+
+    # Decoder: reconstruct original input
+    decoded = Dense(input_dim, activation='sigmoid')(encoded)
+
+    # Autoencoder model
+    autoencoder = Model(input_layer, decoded)
+
+    # Encoder model (for extracting reduced features)
+    encoder = Model(input_layer, encoded)
+
+    # Compile the autoencoder
+    autoencoder.compile(optimizer='adam', loss='mse')
+    return autoencoder, encoder
+
+
+def preprocess_with_autoencoder(df, features, encoding_dim=10, epochs=50, batch_size=32):
+    # Build the autoencoder
+    input_dim = len(features)
+    autoencoder, encoder = build_autoencoder(input_dim, encoding_dim)
+
+    # Train the autoencoder
+    autoencoder.fit(
+        df[features],
+        df[features],
+        epochs=epochs,
+        batch_size=batch_size,
+        shuffle=True,
+        verbose=0
+    )
+
+    # Encode the data
+    encoded_features = encoder.predict(df[features])
+
+    # Return a DataFrame with encoded features
+    encoded_df = pd.DataFrame(encoded_features, index=df.index)
+    return encoded_df
+
 
