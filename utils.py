@@ -25,6 +25,8 @@ import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense
 
+
+
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -35,6 +37,7 @@ import numpy as np
 np.random.seed(0)
 import numpy as np
 from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.mixture import GaussianMixture
 from sklearn.linear_model import LogisticRegression
 import matplotlib.pyplot as plt
 from sklearn.inspection import permutation_importance
@@ -61,7 +64,7 @@ db_collusion_japan = os.path.join(path, 'DB_Collusion_Japan_processed.csv')
 db_collusion_all = os.path.join(path, 'DB_Collusion_All_processed.csv')
 
 # To save plots (pdf format)
-plot_pdf = True
+plot_pdf = False
 
 # User's parameters for the functions
 n_clusters = 2
@@ -69,12 +72,14 @@ classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier',
                  'AdaBoostClassifier',
                  'GradientBoostingClassifier', 'SVC', 'KNeighborsClassifier', 'MLPClassifier', 'BernoulliNB',
                  'GaussianNB']
-clustering_algs = ['BGMM', 'IsolationForest', 'KMeansClustering']
-ml_algorithms = ['KMeansClustering','RandomForestClassifier']#clustering_algs
+clustering_algs = ['AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
+#ml_algorithms = ['AgglomerativeClustering', 'KMeansClustering']
+ml_algorithms = ['IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
+settings_ = ['all_setting+screens']
 train_size = 0.8  # Test and train sizes. The test_size is 1-train_size
-repetitions = 50  # Number of repetitions for each ML algorithm. Minimum value > 30. Recommended value > 100
+repetitions = 30  # Number of repetitions for each ML algorithm. Minimum value > 30. Recommended value > 100
 n_estimators = 300  # Number of estimators for ML algorithms
 precision_recall = True  # To plot precision-recall curves
 load_data = False  # To load the error metrics (to load previous data experimentation)
@@ -260,7 +265,7 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     # predictors = df[predictors_column_name]
     # targets = df[targets_column_name]
     input_dim = len(predictors_column_name)  # Number of input features
-    encoding_dim = 12    # int(input_dim * 0.5)
+    encoding_dim = int(input_dim * 0.75)
     encoded_features = preprocess_with_autoencoder(
         df,
         features=predictors_column_name,
@@ -297,14 +302,33 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     # Train the model with the selected algorithm
     if algorithm == 'KMeansClustering':
         classifier = KMeans(n_clusters=n_clusters, init='k-means++', max_iter=300, random_state=42)
+    elif algorithm == 'GaussianMixture':
+        classifier = GaussianMixture(
+            n_components=n_clusters,
+            covariance_type='full',  # can Try 'tied', 'diag', or 'spherical' as well
+            max_iter=300,
+            init_params='kmeans',
+            reg_covar=1e-5,
+            random_state=42
+        )
     elif algorithm == 'BGMM':
-        classifier = mixture.BayesianGaussianMixture(n_components=n_clusters, weight_concentration_prior=0.1, random_state=42)
+        classifier = mixture.BayesianGaussianMixture(
+            n_components=n_clusters,# Experiment with 'diag', 'spherical', 'tied'
+            weight_concentration_prior=0.01,  # Decreased prior
+            max_iter=200,
+            random_state=42
+        )
     elif algorithm == 'DBSCAN':
         classifier = DBSCAN(eps=0.2, min_samples=10)
     elif algorithm == 'AgglomerativeClustering':
         classifier = AgglomerativeClustering(n_clusters=n_clusters, linkage='complete')
     elif algorithm == 'IsolationForest':
-        classifier = IsolationForest(contamination=0.12, n_estimators=100, random_state=42)
+        classifier = IsolationForest(
+            contamination='auto',  # Adjust based on the dataset
+            n_estimators=200,
+            max_samples='auto',
+            random_state=42
+        )
     elif algorithm == 'ExtraTreesClassifier':
         classifier = ExtraTreesClassifier(n_estimators=n_estimators, criterion='gini', max_depth=None,
                                           min_samples_split=2, min_samples_leaf=1, min_weight_fraction_leaf=0.0,
@@ -378,11 +402,34 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
 
     # We build the model for the train group
     if algorithm in clustering_algs:
-        classifier = classifier.fit(x_train)
-        cluster_labels = classifier.predict(x_test)
-        cluster_labels = np.where(cluster_labels == -1, 0, cluster_labels)
-        adjusted_labels = adjust_cluster_label(cluster_labels)
-        predictions = adjusted_labels
+        try:
+            classifier = classifier.fit(x_train)
+            cluster_labels = classifier.predict(x_test)
+            cluster_labels = np.where(cluster_labels == -1, 0, cluster_labels)
+            adjusted_labels = adjust_cluster_label(cluster_labels)
+            predictions = adjusted_labels
+        except:
+            cluster_labels_train = classifier.fit_predict(x_train)
+
+            # For testing, you must also cluster the test data separately
+            # AgglomerativeClustering does not support predicting on new data
+            # To address this, we cluster both training and test data together
+            x_combined = np.vstack([x_train, x_test])
+            combined_labels = classifier.fit_predict(x_combined)
+
+            # Split combined labels into train and test
+            cluster_labels_train = combined_labels[:len(x_train)]
+            cluster_labels_test = combined_labels[len(x_train):]
+
+            # Adjust cluster labels if needed
+            cluster_labels_test = np.where(cluster_labels_test == -1, 0, cluster_labels_test)
+            adjusted_labels_test = adjust_cluster_label(cluster_labels_test)
+            predictions = adjusted_labels_test
+
+            #classifier.fit(x_train.values)
+            #probabilities = classifier.predict_proba(x_test.values)
+            #cluster_labels = probabilities.argmax(axis=1)
+            #predictions = adjust_cluster_label(cluster_labels)
     else:
         classifier = classifier.fit(x_train, y_train.values.ravel())
         predictions = classifier.predict(x_test)
@@ -398,7 +445,7 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
                                 zero_division=1) * 100  # Ratio of true positives: tp / (tp + fp)
     recall = recall_score(y_test, predictions, pos_label=1, average=None, #average='binary'
                           zero_division=1) * 100  # Ratio of true positives: tp / (tp + fn)
-    f1 = f1_score(y_test, predictions, pos_label=1, average=None, #average='binary'
+    f1 = f1_score(y_test, predictions, pos_label=1, average='binary', #average='binary'
                   zero_division=1) * 100  # F1 = 2 * (precision * recall) / (precision + recall)
     confusion = confusion_matrix(y_test, predictions, normalize='all') * 100
 
@@ -412,7 +459,7 @@ def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_siz
     ''' Print table to compare Machine Learning algorithms '''
 
     df = shuffle_tenders(df)
-
+    predictors = {key: predictors[key] for key in settings_ if key in predictors}
     for setting in predictors:
         accuracy = defaultdict(list)
         balanced_accuracy = defaultdict(list)
@@ -501,6 +548,7 @@ def algorithm_comparison(df, dataset, predictors, targets, algorithms, train_siz
             )
 
 
+
 def save_metrics_table(
         algorithms, train_size, test_size, repetitions, setting,
         accuracy, false_positive, false_negative,
@@ -515,7 +563,7 @@ def save_metrics_table(
     - train_size: Size of the training dataset.
     - test_size: Size of the test dataset.
     - repetitions: Number of repetitions for the evaluation.
-    - setting: all_setting, common, screens or combined.
+    - setting: all_setting, common, screens, or combined.
     - accuracy, false_positive, false_negative, balanced_accuracy, f1, precision, recall:
       Dictionaries containing lists of metric values for each algorithm (in %).
     - train_target_percentage, test_target_percentage: Percentage of target class (e.g., class 1)
@@ -526,40 +574,71 @@ def save_metrics_table(
     Returns:
     - A CSV file containing the table with calculated metrics and confidence intervals.
     """
+    def calculate_confidence_interval(mean, std, n, confidence=0.95):
+        z_score = 1.96  # For 95% confidence level
+        margin = z_score * (std / np.sqrt(n))
+        return mean - margin, mean + margin
+
     metrics_data = []
 
     for algorithm in algorithms:
+        accuracy_mean = np.mean(accuracy[algorithm])
+        accuracy_std = np.std(accuracy[algorithm])
+        acc_ci = calculate_confidence_interval(accuracy_mean, accuracy_std, repetitions)
+
+        balanced_accuracy_mean = np.mean(balanced_accuracy[algorithm])
+        balanced_accuracy_std = np.std(balanced_accuracy[algorithm])
+        ba_ci = calculate_confidence_interval(balanced_accuracy_mean, balanced_accuracy_std, repetitions)
+
+        f1_mean = np.mean(f1[algorithm])
+        f1_std = np.std(f1[algorithm])
+        f1_ci = calculate_confidence_interval(f1_mean, f1_std, repetitions)
+
+        precision_mean = np.mean(precision[algorithm])
+        precision_std = np.std(precision[algorithm])
+        precision_ci = calculate_confidence_interval(precision_mean, precision_std, repetitions)
+
+        recall_mean = np.mean(recall[algorithm])
+        recall_std = np.std(recall[algorithm])
+        recall_ci = calculate_confidence_interval(recall_mean, recall_std, repetitions)
+
         metrics_data.append({
             "Algorithm": algorithm,
             "Setting": setting,
             "Train Target %": train_target_percentage,
             "Test Target %": test_target_percentage,
-            "Mean Accuracy": np.mean(accuracy[algorithm]),
-            "Accuracy SD": np.std(accuracy[algorithm]),
-            "Mean False Positive": np.mean(false_positive[algorithm]),
-            "False Positive SD": np.std(false_positive[algorithm]),
-            "Mean False Negative": np.mean(false_negative[algorithm]),
-            "False Negative SD": np.std(false_negative[algorithm]),
-            "Mean Balanced Accuracy": np.mean(balanced_accuracy[algorithm]),
-            "Balanced Accuracy SD": np.std(balanced_accuracy[algorithm]),
-            "Mean F1-Score": np.mean(f1[algorithm]),
-            "Median F1-Score": np.median(f1[algorithm]),
-            "F1 SD": np.std(f1[algorithm]),
-            "Mean Precision": np.mean(precision[algorithm]),
-            "Median Precision": np.median(precision[algorithm]),
-            "Precision SD": np.std(precision[algorithm]),
-            "Mean Recall": np.mean(recall[algorithm]),
-            "Median Recall": np.median(recall[algorithm]),
-            "Recall SD": np.std(recall[algorithm])
+            "Mean Accuracy": accuracy_mean,
+            "Accuracy SD": accuracy_std,
+            "Accuracy 95% CI": f"{acc_ci[0]:.2f} - {acc_ci[1]:.2f}",
+            "Mean Balanced Accuracy": balanced_accuracy_mean,
+            "Balanced Accuracy SD": balanced_accuracy_std,
+            "Balanced Accuracy 95% CI": f"{ba_ci[0]:.2f} - {ba_ci[1]:.2f}",
+            "Mean F1-Score": f1_mean,
+            "F1 SD": f1_std,
+            "F1 95% CI": f"{f1_ci[0]:.2f} - {f1_ci[1]:.2f}",
+            "Mean Precision": precision_mean,
+            "Precision SD": precision_std,
+            "Precision 95% CI": f"{precision_ci[0]:.2f} - {precision_ci[1]:.2f}",
+            "Mean Recall": recall_mean,
+            "Recall SD": recall_std,
+            "Recall 95% CI": f"{recall_ci[0]:.2f} - {recall_ci[1]:.2f}",
         })
 
     # Create a DataFrame
     metrics_df = pd.DataFrame(metrics_data)
 
     # Save to CSV
-    filename = f"{dataset}_Metrics_{namefile}.csv"
+    filename = f"{dataset}_Metrics_{namefile}.csv" if namefile else f"{dataset}_Metrics.csv"
     metrics_df.to_csv(filename, index=False)
     print(f"Metrics table saved to {filename}")
+
+    # Transpose the table
+    transposed_df = metrics_df.set_index("Algorithm").T
+    filename_transposed = f"{dataset}_Metrics_Transposed_{namefile}.csv" if namefile else f"{dataset}_Metrics_Transposed.csv"
+    transposed_df.to_csv(filename_transposed)
+    print(f"Transposed metrics table saved to {filename_transposed}")
+
+    return metrics_df, transposed_df
 
 def plot_precision_vs_recall(dataset, algorithms, precision, recall, min_f1, max_f1, f1_curves, min_x_y_lim,
                              max_x_y_lim, namefile=None):
@@ -766,47 +845,47 @@ def get_dataset(dataset):
         df_collusion = pd.read_csv(db_collusion_brazilian, header=0)
         #predictors['all_setting'] = ['Tender', 'Bid_value', 'Pre-Tender Estimate (PTE)', 'Difference Bid/PTE', 'Site', ## remove tender and site
                                      #'Date', 'Brazilian State', 'Winner', 'Number_bids'] ##remove Difference.. exclude the ord. variables.
-        predictors['all_setting'] = [ 'Bid_value', 'Pre-Tender Estimate (PTE)',
+        predictors['all_setting'] = ['Bid_value', 'Pre-Tender Estimate (PTE)',
                                      'Date', 'Winner', 'Number_bids']
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
         predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Date', 'Number_bids']
 
     elif dataset == 'switzerland_gr_sg':
         df_collusion = pd.read_csv(db_collusion_switzerland_gr_sg, header=0)
-        predictors['all_setting'] = ['Tender', 'Bid_value', 'Contract_type', 'Date', 'Winner', 'Number_bids']
+        predictors['all_setting'] = ['Bid_value', 'Contract_type', 'Date', 'Winner', 'Number_bids']
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
         predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Date', 'Number_bids']
 
     elif dataset == 'switzerland_ticino':
         df_collusion = pd.read_csv(db_collusion_switzerland_ticino, header=0)
-        predictors['all_setting'] = ['Tender', 'Bid_value', 'Consortium', 'Winner', 'Number_bids']
+        predictors['all_setting'] = ['Bid_value', 'Consortium', 'Winner', 'Number_bids']
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
         predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Number_bids']
 
     elif dataset == 'italian':
         df_collusion = pd.read_csv(db_collusion_italian, header=0)
-        predictors['all_setting'] = ['Tender', 'Bid_value', 'Pre-Tender Estimate (PTE)', 'Difference Bid/PTE', 'Site',
+        predictors['all_setting'] = ['Bid_value', 'Pre-Tender Estimate (PTE)',
                                      'Capital', 'Legal_entity_type', 'Winner', 'Number_bids']
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
         predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Number_bids']
 
     elif dataset == 'american':
         df_collusion = pd.read_csv(db_collusion_american, header=0)
-        predictors['all_setting'] = ['Tender', 'Bid_value', 'Bid_value_without_inflation',
+        predictors['all_setting'] = ['Bid_value', 'Bid_value_without_inflation',
                                      'Bid_value_inflation_raw_milk_price_adjusted_bid', 'Date', 'Winner', 'Number_bids']
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
         predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Date', 'Number_bids']
 
     elif dataset == 'japan':
         df_collusion = pd.read_csv(db_collusion_japan, header=0)
-        predictors['all_setting'] = ['Tender', 'Bid_value', 'Pre-Tender Estimate (PTE)', 'Difference Bid/PTE', 'Site',
+        predictors['all_setting'] = ['Bid_value', 'Pre-Tender Estimate (PTE)',
                                      'Date', 'Winner', 'Number_bids']
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
-        predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Date', 'Number_bids']
+        predictors['common'] = ['Bid_value', 'Winner', 'Date', 'Number_bids']
 
     elif dataset == 'all':
         df_collusion = pd.read_csv(db_collusion_all, header=0)
-        predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Number_bids', 'Dataset']
+        predictors['common'] = ['Bid_value', 'Winner', 'Number_bids', 'Dataset']
 
     predictors['common+screens'] = predictors['common'] + screens
 
@@ -854,7 +933,7 @@ def build_autoencoder(input_dim, encoding_dim):
     encoded = Dense(encoding_dim, activation='relu')(input_layer)
 
     # Decoder: reconstruct original input
-    decoded = Dense(input_dim, activation='sigmoid')(encoded)
+    decoded = Dense(input_dim, activation='relu')(encoded)
 
     # Autoencoder model
     autoencoder = Model(input_layer, decoded)
