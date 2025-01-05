@@ -72,9 +72,9 @@ classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier',
                  'AdaBoostClassifier',
                  'GradientBoostingClassifier', 'SVC', 'KNeighborsClassifier', 'MLPClassifier', 'BernoulliNB',
                  'GaussianNB']
-clustering_algs = ['AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
+clustering_algs = ['DBSCAN', 'AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
 #ml_algorithms = ['AgglomerativeClustering', 'KMeansClustering']
-ml_algorithms = ['IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
+ml_algorithms = ['DBSCAN', 'GaussianMixture', 'BGMM', 'IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 settings_ = ['all_setting+screens']
@@ -265,7 +265,7 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     # predictors = df[predictors_column_name]
     # targets = df[targets_column_name]
     input_dim = len(predictors_column_name)  # Number of input features
-    encoding_dim = int(input_dim * 0.75)
+    encoding_dim = int(input_dim * 0.8)
     encoded_features = preprocess_with_autoencoder(
         df,
         features=predictors_column_name,
@@ -441,9 +441,9 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     # To calculate the error metrics for the classification binary model
     accuracy = accuracy_score(y_test, predictions) * 100
     balanced_accuracy = balanced_accuracy_score(y_test, predictions) * 100
-    precision = precision_score(y_test, predictions, pos_label=1, average=None, #average='binary'
+    precision = precision_score(y_test, predictions, pos_label=1, average='binary', #average='binary'
                                 zero_division=1) * 100  # Ratio of true positives: tp / (tp + fp)
-    recall = recall_score(y_test, predictions, pos_label=1, average=None, #average='binary'
+    recall = recall_score(y_test, predictions, pos_label=1, average='binary', #average='binary'
                           zero_division=1) * 100  # Ratio of true positives: tp / (tp + fn)
     f1 = f1_score(y_test, predictions, pos_label=1, average='binary', #average='binary'
                   zero_division=1) * 100  # F1 = 2 * (precision * recall) / (precision + recall)
