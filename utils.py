@@ -72,9 +72,10 @@ classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier',
                  'AdaBoostClassifier',
                  'GradientBoostingClassifier', 'SVC', 'KNeighborsClassifier', 'MLPClassifier', 'BernoulliNB',
                  'GaussianNB']
-clustering_algs = ['DBSCAN', 'AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
+clustering_algs = ['AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
 #ml_algorithms = ['AgglomerativeClustering', 'KMeansClustering']
-ml_algorithms = ['DBSCAN', 'GaussianMixture', 'BGMM', 'IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
+#ml_algorithms = ['GaussianMixture', 'BGMM', 'IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
+ml_algorithms = ['IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier']
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 settings_ = ['all_setting+screens']
@@ -265,7 +266,7 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     # predictors = df[predictors_column_name]
     # targets = df[targets_column_name]
     input_dim = len(predictors_column_name)  # Number of input features
-    encoding_dim = int(input_dim * 0.8)
+    encoding_dim = int(input_dim * 0.75)
     encoded_features = preprocess_with_autoencoder(
         df,
         features=predictors_column_name,
@@ -926,24 +927,29 @@ def adjust_cluster_label(labels):
     return adjusted_labels
 
 def build_autoencoder(input_dim, encoding_dim):
-    # Define the input layer
     input_layer = Input(shape=(input_dim,))
 
-    # Encoder: reduce dimensionality
-    encoded = Dense(encoding_dim, activation='relu')(input_layer)
+    # Encoder: progressively reduce dimensionality
+    encoded = Dense(int(input_dim * 0.8), activation='relu')(input_layer)
+    encoded = Dense(int(input_dim * 0.7), activation='relu')(encoded)
+    bottleneck = Dense(encoding_dim, activation='relu', name="bottleneck")(encoded)  # Bottleneck layer
 
-    # Decoder: reconstruct original input
-    decoded = Dense(input_dim, activation='relu')(encoded)
+    # Decoder: progressively reconstruct original input
+    decoded = Dense(int(input_dim * 0.5), activation='relu')(bottleneck)
+    decoded = Dense(int(input_dim * 0.75), activation='relu')(decoded)
+    output_layer = Dense(input_dim, activation=None)(decoded)  # No activation for output
 
     # Autoencoder model
-    autoencoder = Model(input_layer, decoded)
+    autoencoder = Model(input_layer, output_layer)
 
     # Encoder model (for extracting reduced features)
-    encoder = Model(input_layer, encoded)
+    encoder = Model(input_layer, bottleneck)
 
     # Compile the autoencoder
     autoencoder.compile(optimizer='adam', loss='mse')
+
     return autoencoder, encoder
+
 
 
 def preprocess_with_autoencoder(df, features, encoding_dim=10, epochs=50, batch_size=32):
