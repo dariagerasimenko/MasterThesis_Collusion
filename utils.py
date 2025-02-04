@@ -24,7 +24,7 @@ from scipy.stats import iqr
 import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, Dense
-
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 
 import os
@@ -251,6 +251,7 @@ def stratified_group_split(predictors, targets, groups, train_size=0.8, random_s
     y_train = train_data['targets']
     x_test = test_data.drop(columns=['targets', 'groups'])
     y_test = test_data['targets']
+
 
     return x_train, x_test, y_train, y_test
 
@@ -936,7 +937,7 @@ def build_autoencoder(input_dim, encoding_dim):
         encoded)  # Bottleneck layer (compressed representation)
 
     # Decoder: progressively reconstruct original input
-    decoded = Dense(int(input_dim * 0.75), activation='relu')(bottleneck)
+    decoded = Dense(int(input_dim * 0.77), activation='relu')(bottleneck)
     decoded = Dense(int(input_dim * 0.8), activation='relu')(decoded)
     decoded = Dense(int(input_dim * 0.9), activation='relu')(decoded)
     output_layer = Dense(input_dim, activation=None)(decoded)  # No activation for output
@@ -951,7 +952,6 @@ def build_autoencoder(input_dim, encoding_dim):
     autoencoder.compile(optimizer='adam', loss='mse')
 
     return autoencoder, encoder
-
 
 
 def preprocess_with_autoencoder(df, features, encoding_dim=10, epochs=50, batch_size=32):
@@ -972,8 +972,31 @@ def preprocess_with_autoencoder(df, features, encoding_dim=10, epochs=50, batch_
     # Encode the data
     encoded_features = encoder.predict(df[features])
 
-    # Return a DataFrame with encoded features
     encoded_df = pd.DataFrame(encoded_features, index=df.index)
     return encoded_df
+def normalize_data(df, features, method="minmax"):
+    """
+    Normalize the dataset using MinMaxScaler or StandardScaler.
+
+    Parameters:
+    - df (pd.DataFrame): The input DataFrame.
+    - features (list): List of feature column names to normalize.
+    - method (str): Scaling method, either "minmax" (default) or "standard".
+
+    Returns:
+    - df_scaled (pd.DataFrame): The normalized DataFrame.
+    - scaler (sklearn Scaler object): The fitted scaler for later transformations.
+    """
+    if method == "minmax":
+        scaler = MinMaxScaler(feature_range=(0, 1))  # Scale to [0,1]
+    elif method == "standard":
+        scaler = StandardScaler()  # Standardization (mean=0, std=1)
+    else:
+        raise ValueError("Invalid method. Choose either 'minmax' or 'standard'.")
+
+    df_scaled = scaler.fit_transform(df[features])  # Fit & transform data
+    df_scaled = pd.DataFrame(df_scaled, columns=features, index=df.index)  # Convert back to DataFrame
+
+    return df_scaled, scaler
 
 
