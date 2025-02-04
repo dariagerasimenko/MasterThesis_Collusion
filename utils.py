@@ -930,13 +930,15 @@ def build_autoencoder(input_dim, encoding_dim):
     input_layer = Input(shape=(input_dim,))
 
     # Encoder: progressively reduce dimensionality
-    encoded = Dense(int(input_dim * 0.8), activation='relu')(input_layer)
-    encoded = Dense(int(input_dim * 0.7), activation='relu')(encoded)
-    bottleneck = Dense(encoding_dim, activation='relu', name="bottleneck")(encoded)  # Bottleneck layer
+    encoded = Dense(int(input_dim * 0.9), activation='relu')(input_layer)
+    encoded = Dense(int(input_dim * 0.8), activation='relu')(encoded)
+    bottleneck = Dense(encoding_dim, activation='relu', name="bottleneck")(
+        encoded)  # Bottleneck layer (compressed representation)
 
     # Decoder: progressively reconstruct original input
-    decoded = Dense(int(input_dim * 0.5), activation='relu')(bottleneck)
-    decoded = Dense(int(input_dim * 0.75), activation='relu')(decoded)
+    decoded = Dense(int(input_dim * 0.75), activation='relu')(bottleneck)
+    decoded = Dense(int(input_dim * 0.8), activation='relu')(decoded)
+    decoded = Dense(int(input_dim * 0.9), activation='relu')(decoded)
     output_layer = Dense(input_dim, activation=None)(decoded)  # No activation for output
 
     # Autoencoder model
