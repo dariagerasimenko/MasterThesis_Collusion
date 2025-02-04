@@ -937,8 +937,8 @@ def build_autoencoder(input_dim, encoding_dim):
         encoded)  # Bottleneck layer (compressed representation)
 
     # Decoder: progressively reconstruct original input
-    decoded = Dense(int(input_dim * 0.77), activation='relu')(bottleneck)
-    decoded = Dense(int(input_dim * 0.8), activation='relu')(decoded)
+    decoded = Dense(int(input_dim * 0.8), activation='relu')(bottleneck)
+    #decoded = Dense(int(input_dim * 0.8), activation='relu')(decoded)
     decoded = Dense(int(input_dim * 0.9), activation='relu')(decoded)
     output_layer = Dense(input_dim, activation=None)(decoded)  # No activation for output
 
