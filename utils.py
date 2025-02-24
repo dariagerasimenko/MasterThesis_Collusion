@@ -75,7 +75,7 @@ classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier',
 clustering_algs = ['AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
 #ml_algorithms = ['AgglomerativeClustering', 'KMeansClustering']
 #ml_algorithms = ['GaussianMixture', 'BGMM', 'IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
-ml_algorithms = ['IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier']
+ml_algorithms = ["GaussianMixture",'IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier']
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 settings_ = ['all_setting+screens']
@@ -318,6 +318,12 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
             n_components=n_clusters,# Experiment with 'diag', 'spherical', 'tied'
             weight_concentration_prior=0.01,  # Decreased prior
             max_iter=200,
+            random_state=42
+        )
+    elif algorithm == 'GaussianMixture':
+        classifier = mixture.GaussianMixture(
+            n_components=n_clusters,  # Experiment with 'diag', 'spherical', 'tied'
+            covariance_type='full',
             random_state=42
         )
     elif algorithm == 'DBSCAN':
@@ -611,19 +617,19 @@ def save_metrics_table(
             "Test Target %": test_target_percentage,
             "Mean Accuracy": accuracy_mean,
             "Accuracy SD": accuracy_std,
-            "Accuracy 95% CI": f"{acc_ci[0]:.2f} - {acc_ci[1]:.2f}",
+            #"Accuracy 95% CI": f"{acc_ci[0]:.2f} - {acc_ci[1]:.2f}",
             "Mean Balanced Accuracy": balanced_accuracy_mean,
             "Balanced Accuracy SD": balanced_accuracy_std,
-            "Balanced Accuracy 95% CI": f"{ba_ci[0]:.2f} - {ba_ci[1]:.2f}",
+            #"Balanced Accuracy 95% CI": f"{ba_ci[0]:.2f} - {ba_ci[1]:.2f}",
             "Mean F1-Score": f1_mean,
             "F1 SD": f1_std,
-            "F1 95% CI": f"{f1_ci[0]:.2f} - {f1_ci[1]:.2f}",
+            #"F1 95% CI": f"{f1_ci[0]:.2f} - {f1_ci[1]:.2f}",
             "Mean Precision": precision_mean,
             "Precision SD": precision_std,
-            "Precision 95% CI": f"{precision_ci[0]:.2f} - {precision_ci[1]:.2f}",
+            #"Precision 95% CI": f"{precision_ci[0]:.2f} - {precision_ci[1]:.2f}",
             "Mean Recall": recall_mean,
             "Recall SD": recall_std,
-            "Recall 95% CI": f"{recall_ci[0]:.2f} - {recall_ci[1]:.2f}",
+            #"Recall 95% CI": f"{recall_ci[0]:.2f} - {recall_ci[1]:.2f}",
         })
 
     # Create a DataFrame
@@ -954,27 +960,43 @@ def build_autoencoder(input_dim, encoding_dim):
     return autoencoder, encoder
 
 
-def preprocess_with_autoencoder(df, features, encoding_dim=10, epochs=50, batch_size=32):
+def preprocess_with_autoencoder(df, features, noise_factor=0.2, encoding_dim=10, epochs=50, batch_size=32):
     # Build the autoencoder
     input_dim = len(features)
     autoencoder, encoder = build_autoencoder(input_dim, encoding_dim)
 
-    # Train the autoencoder
+    df_scaled, scaler = normalize_data(df, features)
+    # df_scaled = df[features]
+
+    # Add noise to the data
+    noisy_data = df_scaled + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=df_scaled.shape)
+    noisy_data = np.clip(noisy_data, 0., 1.)  # Keep values within valid range
+
+    # Train the autoencoder with noisy input but clean output
     autoencoder.fit(
-        df[features],
-        df[features],
+        noisy_data,  # Noisy input
+        df_scaled,  # Clean target output
         epochs=epochs,
         batch_size=batch_size,
         shuffle=True,
         verbose=0
     )
+    # Train the autoencoder
+    #autoencoder.fit(
+        #df[features],
+        #df[features],
+        #epochs=epochs,
+        #batch_size=batch_size,
+        #shuffle=True,
+        #verbose=0
+    #)
 
     # Encode the data
     encoded_features = encoder.predict(df[features])
 
     encoded_df = pd.DataFrame(encoded_features, index=df.index)
     return encoded_df
-def normalize_data(df, features, method="minmax"):
+def normalize_data(df, features, method="standard"):
     """
     Normalize the dataset using MinMaxScaler or StandardScaler.
 
