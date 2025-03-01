@@ -26,7 +26,7 @@ if __name__ == '__main__':
         elif number_input == '4': dataset = 'switzerland_gr_sg'
         elif number_input == '5': dataset = 'switzerland_ticino'
         elif number_input == '6': dataset = 'japan'       
-        elif number_input == '7': dataset = 'all'     
+        elif number_input == '7': dataset = 'all'
 
     # 1. Get the dataset processed ready to use with the ML algorithms
     df_collusion, predictors, targets = get_dataset(dataset)

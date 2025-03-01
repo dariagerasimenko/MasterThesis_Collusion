@@ -20,6 +20,8 @@ from sklearn import mixture
 from sklearn.model_selection import GroupShuffleSplit
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+from scipy.optimize import linear_sum_assignment
+from sklearn.metrics import confusion_matrix
 
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
@@ -78,7 +80,7 @@ classifiers = ['GaussianProcessClassifier', 'SGDClassifier', 'ExtraTreesClassifi
 clustering_algs = ['AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
 #ml_algorithms = ['AgglomerativeClustering', 'KMeansClustering']
 #ml_algorithms = ['GaussianMixture', 'BGMM', 'IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
-ml_algorithms = ["GaussianMixture"]#,'IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier', 'ExtraTreesClassifier', 'GradientBoostingClassifier']
+ml_algorithms = ["GaussianMixture",'IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier', 'ExtraTreesClassifier', 'GradientBoostingClassifier']
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 train_size = 0.8  # Test and train sizes. The test_size is 1-train_size
@@ -92,8 +94,8 @@ quality_table = True
 # Model specification parameters:
 settings_ = ['all_setting+screens']
 data_scaler = True          # StandardScalar or MinMax Scalar applied before ML algs
-autoencoders_on = True      # Autoencoders applied before ML algs
-ae_setting = "D"          # Vanilla Autoencoder if "V", Denoisoning if "D"
+autoencoders_on = False      # Autoencoders applied before ML algs
+ae_setting = "V"          # Vanilla Autoencoder if "V", Denoisoning if "D"
 
 def set_random_seed(seed=42):
     np.random.seed(seed)
@@ -442,7 +444,7 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
             classifier = classifier.fit(x_train)
             cluster_labels = classifier.predict(x_test)
             cluster_labels = np.where(cluster_labels == -1, 0, cluster_labels)
-            adjusted_labels = adjust_cluster_label(cluster_labels)
+            adjusted_labels = adjust_cluster_label(cluster_labels, y_test, dataset)
             predictions = adjusted_labels
         except:
             cluster_labels_train = classifier.fit_predict(x_train)
@@ -459,7 +461,7 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
 
             # Adjust cluster labels if needed
             cluster_labels_test = np.where(cluster_labels_test == -1, 0, cluster_labels_test)
-            adjusted_labels_test = adjust_cluster_label(cluster_labels_test)
+            adjusted_labels_test = adjust_cluster_label(cluster_labels_test, y_test, dataset)
             predictions = adjusted_labels_test
 
             #classifier.fit(x_train.values)
@@ -681,7 +683,7 @@ def save_metrics_table(
 
     # Transpose the table
     transposed_df = metrics_df.set_index("Algorithm").T
-    filename_transposed = f"{dataset}_Metrics_Transposed_{namefile}.csv" if namefile else f"{dataset}_Metrics_Transposed.csv"
+    filename_transposed = f"{dataset}__{'Norm' if data_scaler else 'Not Norm'}__{ae_setting if autoencoders_on else 'No Ae'}.csv" if namefile else f"{dataset}.csv"
     transposed_df.to_csv(filename_transposed)
     print(f"Transposed metrics table saved to {filename_transposed}")
 
@@ -953,22 +955,35 @@ def generate_binary_gaussian_cluster(mu_0,mu_1,Sigma_0,Sigma_1,number_of_observa
     return data
 
 
-def adjust_cluster_label(labels):
+
+
+def adjust_cluster_label(y_pred, y_true, dataset):
     """
-    Adjusts the cluster labels by assigning 1 to the least occurring label and 0 otherwise.
+    Adjusts the cluster labels to best match the real labels using the Hungarian algorithm.
 
     Parameters:
-    - data: List of cluster assignments from the clustering algorithm.
-    - labels: List of predicted labels to adjust.
+    - y_true (array-like): The true class labels.
+    - y_pred (array-like): The predicted cluster labels.
 
     Returns:
-    - Updated labels with 1 assigned to the least occurring label and 0 to the other.
+    - adjusted_labels (array-like): The adjusted cluster labels that best match the real labels.
     """
-    unique_labels, counts = np.unique(labels, return_counts=True)
-    least_occuring_label = unique_labels[np.argmin(counts)]
+    # Create confusion matrix (rows = true labels, cols = cluster labels)
+    if dataset == "japan":
+        unique_labels, counts = np.unique(y_pred, return_counts=True)
+        least_occuring_label = unique_labels[np.argmin(counts)]
+        adjusted_labels = [1 if label == least_occuring_label else 0 for label in y_pred]
+    else:
+        cm = confusion_matrix(y_true, y_pred)
 
-    # Map the least occurring label to 1 and others to 0
-    adjusted_labels = [1 if label == least_occuring_label else 0 for label in labels]
+        # Solve the optimal label assignment using the Hungarian algorithm
+        row_ind, col_ind = linear_sum_assignment(cm.max() - cm)
+
+        # Create a mapping from predicted clusters to true labels
+        cluster_mapping = {col: row for row, col in zip(row_ind, col_ind)}
+
+        # Apply mapping to y_pred
+        adjusted_labels = np.array([cluster_mapping[label] for label in y_pred])
 
     return adjusted_labels
 
