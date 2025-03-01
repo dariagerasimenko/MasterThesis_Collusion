@@ -18,13 +18,16 @@ from scipy import stats
 from itertools import cycle
 from sklearn import mixture
 from sklearn.model_selection import GroupShuffleSplit
-from scipy.stats import mode
-from sklearn.neighbors import NearestCentroid
-from scipy.stats import iqr
-import tensorflow as tf
-from tensorflow.keras.models import Model
-from tensorflow.keras.layers import Input, Dense
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Dense, Lambda, BatchNormalization, ELU
+from tensorflow.keras.models import Model
+from tensorflow.keras import backend as K
+from tensorflow.keras.losses import mse
 
 
 import os
@@ -68,17 +71,16 @@ plot_pdf = False
 
 # User's parameters for the functions
 n_clusters = 2
-classifiers = ['KMeansClustering', 'GaussianProcessClassifier', 'SGDClassifier', 'ExtraTreesClassifier', 'RandomForestClassifier',
+classifiers = ['GaussianProcessClassifier', 'SGDClassifier', 'ExtraTreesClassifier', 'RandomForestClassifier',
                  'AdaBoostClassifier',
                  'GradientBoostingClassifier', 'SVC', 'KNeighborsClassifier', 'MLPClassifier', 'BernoulliNB',
                  'GaussianNB']
 clustering_algs = ['AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
 #ml_algorithms = ['AgglomerativeClustering', 'KMeansClustering']
 #ml_algorithms = ['GaussianMixture', 'BGMM', 'IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
-ml_algorithms = ["GaussianMixture",'IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier']
+ml_algorithms = ["GaussianMixture"]#,'IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier', 'ExtraTreesClassifier', 'GradientBoostingClassifier']
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
-settings_ = ['all_setting+screens']
 train_size = 0.8  # Test and train sizes. The test_size is 1-train_size
 repetitions = 30  # Number of repetitions for each ML algorithm. Minimum value > 30. Recommended value > 100
 n_estimators = 300  # Number of estimators for ML algorithms
@@ -87,6 +89,15 @@ load_data = False  # To load the error metrics (to load previous data experiment
 save_data = True  # To save the error metrics (to persist the data experimentation)
 quality_table = True
 
+# Model specification parameters:
+settings_ = ['all_setting+screens']
+data_scaler = True          # StandardScalar or MinMax Scalar applied before ML algs
+autoencoders_on = True      # Autoencoders applied before ML algs
+ae_setting = "D"          # Vanilla Autoencoder if "V", Denoisoning if "D"
+
+def set_random_seed(seed=42):
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
 def shuffle_tenders(df1):
     ''' Shuffle tenders. The reason is that maybe the colluded tenders are concentrated in some parts of the excel (dataframe)'''
 
@@ -266,19 +277,23 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     # To assing the dataframes
     # predictors = df[predictors_column_name]
     # targets = df[targets_column_name]
-    input_dim = len(predictors_column_name)  # Number of input features
-    encoding_dim = int(input_dim * 0.75)
-    encoded_features = preprocess_with_autoencoder(
-        df,
-        features=predictors_column_name,
-        encoding_dim=encoding_dim,  # Adjust encoding dimension as needed
-        epochs=50,
-        batch_size=32
-    )
+    if autoencoders_on:
+        input_dim = len(predictors_column_name)  # Number of input features
+        encoding_dim = int(input_dim * 0.75)
+        encoded_features = preprocess_with_autoencoder(
+                    df,
+                    features=predictors_column_name,
+                    encoding_dim=encoding_dim,  # Adjust encoding dimension as needed
+                    epochs=50,
+                    batch_size=32
+        )
 
-    # Replace predictors with encoded features
-    predictors = encoded_features
-    targets = df[targets_column_name]
+            # Replace predictors with encoded features
+        predictors = encoded_features
+        targets = df[targets_column_name]
+    else:
+        predictors = df[predictors_column_name]
+        targets = df[targets_column_name]
 
     # We create the training and test sample, both for predictors and for the objective variable, based on the tender group.
     # That is, the bids of a tender either all own to the train group or the test group. They cannot be divided between both groups.
@@ -297,6 +312,19 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
         train_size=0.8,
         random_state=42
     )
+
+    feature_columns = predictors.columns  # Assuming predictors is a DataFrame
+
+    # Normalize training data and get the fitted scaler
+    x_train_scaled, scaler = normalize_data(x_train, features=feature_columns)
+
+    # Use the same scaler to transform the test data
+    x_test_scaled = pd.DataFrame(scaler.transform(x_test[feature_columns]),
+                                 columns=feature_columns, index=x_test.index)
+
+    if data_scaler:
+        x_train = x_train_scaled
+        x_test = x_test_scaled
 
     train_target_percentages = (y_train.sum() / len(y_train)) * 100
     test_target_percentages = (y_test.sum() / len(y_test)) * 100
@@ -333,7 +361,7 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     elif algorithm == 'IsolationForest':
         classifier = IsolationForest(
             contamination='auto',  # Adjust based on the dataset
-            n_estimators=200,
+            n_estimators=300,
             max_samples='auto',
             random_state=42
         )
@@ -610,26 +638,37 @@ def save_metrics_table(
         recall_std = np.std(recall[algorithm])
         recall_ci = calculate_confidence_interval(recall_mean, recall_std, repetitions)
 
+        # Adding FP and FN
+        #false_positive_mean = np.mean(false_positive[algorithm])
+        #false_positive_std = np.std(false_positive[algorithm])
+
+        #false_negative_mean = np.mean(false_negative[algorithm])
+        #false_negative_std = np.std(false_negative[algorithm])
+
         metrics_data.append({
             "Algorithm": algorithm,
-            "Setting": setting,
-            "Train Target %": train_target_percentage,
-            "Test Target %": test_target_percentage,
-            "Mean Accuracy": accuracy_mean,
-            "Accuracy SD": accuracy_std,
+            #"Setting": setting,
+            "Train Target %": round(train_target_percentage,1),
+            "Test Target %": round(test_target_percentage,1),
+            "Mean Accuracy %": round(accuracy_mean,1),
+            "Accuracy SD": round(accuracy_std,2),
             #"Accuracy 95% CI": f"{acc_ci[0]:.2f} - {acc_ci[1]:.2f}",
-            "Mean Balanced Accuracy": balanced_accuracy_mean,
-            "Balanced Accuracy SD": balanced_accuracy_std,
+            "Mean Balanced Accuracy %": round(balanced_accuracy_mean,1),
+            "Balanced Accuracy SD": round(balanced_accuracy_std,2),
             #"Balanced Accuracy 95% CI": f"{ba_ci[0]:.2f} - {ba_ci[1]:.2f}",
-            "Mean F1-Score": f1_mean,
-            "F1 SD": f1_std,
+            "Mean F1-Score %": round(f1_mean,1),
+            "F1 SD": round(f1_std,2),
             #"F1 95% CI": f"{f1_ci[0]:.2f} - {f1_ci[1]:.2f}",
-            "Mean Precision": precision_mean,
-            "Precision SD": precision_std,
+            "Mean Precision %": round(precision_mean,1),
+            "Precision SD": round(precision_std,2),
             #"Precision 95% CI": f"{precision_ci[0]:.2f} - {precision_ci[1]:.2f}",
-            "Mean Recall": recall_mean,
-            "Recall SD": recall_std,
+            "Mean Recall %": round(recall_mean,1),
+            "Recall SD": round(recall_std,2),
             #"Recall 95% CI": f"{recall_ci[0]:.2f} - {recall_ci[1]:.2f}",
+            #"Mean FP": round(false_positive_mean, 1),
+            #"FP SD": round(false_positive_std, 2),
+            #"Mean FN": round(false_negative_mean, 1),
+            #"FN SD": round(false_negative_std, 2),
         })
 
     # Create a DataFrame
@@ -934,6 +973,9 @@ def adjust_cluster_label(labels):
     return adjusted_labels
 
 def build_autoencoder(input_dim, encoding_dim):
+
+    set_random_seed()
+
     input_layer = Input(shape=(input_dim,))
 
     # Encoder: progressively reduce dimensionality
@@ -944,7 +986,6 @@ def build_autoencoder(input_dim, encoding_dim):
 
     # Decoder: progressively reconstruct original input
     decoded = Dense(int(input_dim * 0.8), activation='relu')(bottleneck)
-    #decoded = Dense(int(input_dim * 0.8), activation='relu')(decoded)
     decoded = Dense(int(input_dim * 0.9), activation='relu')(decoded)
     output_layer = Dense(input_dim, activation=None)(decoded)  # No activation for output
 
@@ -960,17 +1001,23 @@ def build_autoencoder(input_dim, encoding_dim):
     return autoencoder, encoder
 
 
-def preprocess_with_autoencoder(df, features, noise_factor=0.2, encoding_dim=10, epochs=50, batch_size=32):
+def preprocess_with_autoencoder(df, features, noise_factor=0.2, encoding_dim=5, epochs=50, batch_size=32):
+
+    set_random_seed()
     # Build the autoencoder
     input_dim = len(features)
     autoencoder, encoder = build_autoencoder(input_dim, encoding_dim)
 
-    df_scaled, scaler = normalize_data(df, features)
-    # df_scaled = df[features]
+    #df_scaled, scaler = normalize_data(df, features)
+    df_scaled = df[features].values
 
     # Add noise to the data
-    noisy_data = df_scaled + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=df_scaled.shape)
-    noisy_data = np.clip(noisy_data, 0., 1.)  # Keep values within valid range
+    if ae_setting == "D":
+        noisy_data = df_scaled + noise_factor * np.random.normal(loc=0.0, scale=1.0, size=df_scaled.shape)
+    else:
+        noisy_data = df_scaled
+
+    #noisy_data = np.clip(noisy_data, 0., 1.)  # Keep values within valid range
 
     # Train the autoencoder with noisy input but clean output
     autoencoder.fit(
@@ -996,6 +1043,8 @@ def preprocess_with_autoencoder(df, features, noise_factor=0.2, encoding_dim=10,
 
     encoded_df = pd.DataFrame(encoded_features, index=df.index)
     return encoded_df
+
+
 def normalize_data(df, features, method="standard"):
     """
     Normalize the dataset using MinMaxScaler or StandardScaler.
@@ -1020,5 +1069,4 @@ def normalize_data(df, features, method="standard"):
     df_scaled = pd.DataFrame(df_scaled, columns=features, index=df.index)  # Convert back to DataFrame
 
     return df_scaled, scaler
-
 
