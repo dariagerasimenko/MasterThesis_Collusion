@@ -40,7 +40,7 @@ if __name__ == '__main__':
     # 4. Print Scatter Matrix
     df_scatter_matrix = shuffle_tenders(df_collusion)
     # Columns to plot
-    columns_to_plot = ['Bid_value'] + screens + ['Collusive_competitor_original'] # Collusive_competitor is deleted at the end
+    columns_to_plot = ['Bid_value'] + screens + ['Collusive_competitor_original']
     df_scatter_matrix = df_scatter_matrix[columns_to_plot]
     # Replace labels for colors to print the scatter matrix
     if 'Collusive_competitor_original' in df_scatter_matrix:

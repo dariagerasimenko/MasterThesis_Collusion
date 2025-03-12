@@ -22,7 +22,8 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import confusion_matrix
-
+from sklearn.inspection import permutation_importance
+import shap
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 import tensorflow as tf
@@ -80,7 +81,7 @@ classifiers = ['GaussianProcessClassifier', 'SGDClassifier', 'ExtraTreesClassifi
 clustering_algs = ['AgglomerativeClustering', 'BGMM', 'IsolationForest', 'KMeansClustering', 'GaussianMixture']
 #ml_algorithms = ['AgglomerativeClustering', 'KMeansClustering']
 #ml_algorithms = ['GaussianMixture', 'BGMM', 'IsolationForest', 'AgglomerativeClustering', 'KMeansClustering',  'RandomForestClassifier']#clustering_algs
-ml_algorithms = ["GaussianMixture",'IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier', 'ExtraTreesClassifier', 'GradientBoostingClassifier']
+ml_algorithms = ['GaussianMixture', 'IsolationForest', 'AgglomerativeClustering','KMeansClustering', 'RandomForestClassifier', 'ExtraTreesClassifier', 'GradientBoostingClassifier']
 screens = ['CV', 'SPD', 'DIFFP', 'RD', 'KURT', 'SKEW',
            'KSTEST']  # Screening variables to use. There are seven: CV, SPD, DIFFP, RD, KURT, SKEW and KSTEST
 train_size = 0.8  # Test and train sizes. The test_size is 1-train_size
@@ -92,8 +93,9 @@ save_data = True  # To save the error metrics (to persist the data experimentati
 quality_table = True
 
 # Model specification parameters:
+naive_labels = True
 settings_ = ['all_setting+screens']
-data_scaler = True          # StandardScalar or MinMax Scalar applied before ML algs
+data_scaler = False          # StandardScalar or MinMax Scalar applied before ML algs
 autoencoders_on = False      # Autoencoders applied before ML algs
 ae_setting = "V"          # Vanilla Autoencoder if "V", Denoisoning if "D"
 
@@ -350,12 +352,6 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
             max_iter=200,
             random_state=42
         )
-    elif algorithm == 'GaussianMixture':
-        classifier = mixture.GaussianMixture(
-            n_components=n_clusters,  # Experiment with 'diag', 'spherical', 'tied'
-            covariance_type='full',
-            random_state=42
-        )
     elif algorithm == 'DBSCAN':
         classifier = DBSCAN(eps=0.2, min_samples=10)
     elif algorithm == 'AgglomerativeClustering':
@@ -446,12 +442,10 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
             cluster_labels = np.where(cluster_labels == -1, 0, cluster_labels)
             adjusted_labels = adjust_cluster_label(cluster_labels, y_test, dataset)
             predictions = adjusted_labels
+
         except:
             cluster_labels_train = classifier.fit_predict(x_train)
 
-            # For testing, you must also cluster the test data separately
-            # AgglomerativeClustering does not support predicting on new data
-            # To address this, we cluster both training and test data together
             x_combined = np.vstack([x_train, x_test])
             combined_labels = classifier.fit_predict(x_combined)
 
@@ -486,7 +480,6 @@ def predict_collusion_company(df, dataset, predictors_column_name, targets_colum
     f1 = f1_score(y_test, predictions, pos_label=1, average='binary', #average='binary'
                   zero_division=1) * 100  # F1 = 2 * (precision * recall) / (precision + recall)
     confusion = confusion_matrix(y_test, predictions, normalize='all') * 100
-
 
     return accuracy, balanced_accuracy, precision, recall, f1, confusion, y_test, df_predictions, train_target_percentages, test_target_percentages
 
@@ -683,7 +676,7 @@ def save_metrics_table(
 
     # Transpose the table
     transposed_df = metrics_df.set_index("Algorithm").T
-    filename_transposed = f"{dataset}__{'Norm' if data_scaler else 'Not Norm'}__{ae_setting if autoencoders_on else 'No Ae'}.csv" if namefile else f"{dataset}.csv"
+    filename_transposed = f"{dataset}__{'naive' if naive_labels else 'Hungarian'}__{'Norm' if data_scaler else 'Not Norm'}__{ae_setting if autoencoders_on else 'No Ae'}.csv" if namefile else f"{dataset}.csv"
     transposed_df.to_csv(filename_transposed)
     print(f"Transposed metrics table saved to {filename_transposed}")
 
@@ -907,6 +900,7 @@ def get_dataset(dataset):
 
     elif dataset == 'switzerland_ticino':
         df_collusion = pd.read_csv(db_collusion_switzerland_ticino, header=0)
+        df_collusion["Collusive_competitor_original"] = df_collusion["Collusive_competitor"].copy()
         predictors['all_setting'] = ['Bid_value', 'Consortium', 'Winner', 'Number_bids']
         predictors['all_setting+screens'] = predictors['all_setting'] + screens
         predictors['common'] = ['Tender', 'Bid_value', 'Winner', 'Number_bids']
@@ -939,7 +933,10 @@ def get_dataset(dataset):
     predictors['common+screens'] = predictors['common'] + screens
 
     # Output fields of the datasets to the ML algorithms.
-    targets = ['Collusive_competitor_original']
+    try:
+        targets = ['Collusive_competitor_original']
+    except:
+        targets = ['Collusive_competitor']
 
     return df_collusion, predictors, targets
 
@@ -969,10 +966,13 @@ def adjust_cluster_label(y_pred, y_true, dataset):
     - adjusted_labels (array-like): The adjusted cluster labels that best match the real labels.
     """
     # Create confusion matrix (rows = true labels, cols = cluster labels)
-    if dataset == "japan":
+    if naive_labels:
         unique_labels, counts = np.unique(y_pred, return_counts=True)
         least_occuring_label = unique_labels[np.argmin(counts)]
-        adjusted_labels = [1 if label == least_occuring_label else 0 for label in y_pred]
+        if dataset in ['brazilian', 'american', 'italian', 'japan']:
+            adjusted_labels = [1 if label == least_occuring_label else 0 for label in y_pred]
+        else:
+            adjusted_labels = [0 if label == least_occuring_label else 1 for label in y_pred]
     else:
         cm = confusion_matrix(y_true, y_pred)
 
